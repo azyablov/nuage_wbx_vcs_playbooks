@@ -1,0 +1,115 @@
+---
+- hosts: leaf04
+  gather_facts: False
+  become: False
+  serial:
+    - 1
+    - 2
+  vars:
+    debug_enable: False
+
+  tasks:
+    - name: Check WBX availability
+      command: ping -c 3 "{{ ansible_host }}"
+      changed_when: False
+      delegate_to: localhost
+      register: wbx_availability
+    
+    - name: Check port 22 availability
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        delay: 1
+        msg: "{{ ansible_host }} SSH is not available"
+        state: started
+        timeout: 30
+        connect_timeout: 3
+      register: ssh_availability
+      when: wbx_availability is succeeded
+      delegate_to: localhost
+    
+    - name: Set cli provider
+      set_fact:
+        cli:
+          host: "{{ ansible_host }}"
+          username: "{{sros_user|default('admin')}}"
+          password: "{{sros_password|default('admin')}}"
+          #transport: cli
+    
+    - name: run show version
+      sros_command:
+        commands: show version
+        provider: "{{ cli }}"
+      register: sh_ver_results
+    
+    - name: Get directory listing
+      sros_command:
+        commands: file dir cf2:/TIMOS
+        provider: "{{ cli }}"
+      register: file_dir_results
+    
+    - set_fact:
+        current_version: "{{ sh_ver_results.stdout | regex_replace(regexp,'\\1')|int }}"
+      vars:
+        regexp: '.*TiMOS-DC-B-5.4.\d-(\d+) both.*'
+    - debug:
+        var: current_version
+
+    - name: Assert version is lower than target
+      assert:
+        that:
+          - "{{ current_version }} < {{ target_version }}"
+        fail_msg: "Current verions is equal to or higher than target! Upgrade is not needed!"
+        success_msg: "The version is lower, device could be upgraded"
+      delegate_to: localhost
+    
+    #2 Dir(s)               143224832 bytes free.
+    - set_fact:
+        free_space: "{{ file_dir_results.stdout | regex_replace(regexp,'\\1')|int }}"
+      vars:
+        regexp: '.*\d+ Dir\(s\)\s+(\d+) bytes free\..*'
+    - debug:
+        var: free_space
+    
+    - name: Assert space on the disk is enougth to proceed with upgrade
+      assert:
+        that:
+          - "{{ free_space }} > {{ sros_image_size }}"
+        fail_msg: "Not enougth space on device!"
+        success_msg: "Enougth space on the disk is available."
+      delegate_to: localhost
+    
+    - name: Copy both.tim to device
+      shell: |
+        export SSHPASS={{ sros_password }}
+        sshpass -e scp {{ sros_src_image_name }} {{ sros_user }}@{{ ansible_host }}:cf2:/timos/{{ sros_dst_image_name }}
+      register: copy_both_results
+    
+    - name: Identify primary image
+      sros_command:
+        commands: 
+          - show bof | match primary-image
+        provider: "{{ cli }}"
+      register: pri_image
+    
+    - set_fact:
+        old_primary_image_path: "{{ pri_image | regex_replace(regexp,'\\1') }}"
+      vars:
+        regexp: '.*primary-image\s+(cf.*tim).*'
+    - debug:
+        var: old_primary_image_path
+    
+    - name: Set secondary image and old to primary
+      sros_command:
+        commands: 
+          - bof secondary-image {{ old_primary_image_path | regex_replace('\\\\','\\') }}
+          - bof primary-image cf2:\timos\{{ sros_dst_image_name }}
+          - bof save
+        provider: "{{ cli }}"
+      register: set_boot_image
+    
+
+
+
+
+

@@ -1,0 +1,92 @@
+---
+- hosts: wbxes
+  gather_facts: False
+  become: False
+  serial:
+    - 1
+    - 2
+  vars:
+    debug_enable: False
+
+  tasks:
+    - name: Check WBX availability
+      command: ping -c 3 "{{ ansible_host }}"
+      changed_when: False
+      delegate_to: localhost
+      register: wbx_availability
+    
+    - name: Check port 22 availability
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        delay: 1
+        msg: "{{ ansible_host }} SSH is not available"
+        state: started
+        timeout: 30
+        connect_timeout: 3
+      register: ssh_availability
+      when: wbx_availability is succeeded
+      delegate_to: localhost
+    
+    - name: Set cli provider
+      set_fact:
+        cli:
+          host: "{{ ansible_host }}"
+          username: "{{sros_user|default('admin')}}"
+          password: "{{sros_password|default('admin')}}"
+          #transport: cli
+    
+    - name: Add new user
+      sros_config:
+        lines: 
+          - configure system security user {{ sros_new_user }}
+        backup: yes
+        provider: "{{ cli }}"
+      register: add_new_user
+
+    - name: Generate new random password
+      shell: while [ -z $SROS_PW ]; do SROS_PW=`tr -cd '[:alnum:]%?!#@;\(\)\[\]' < /dev/urandom | head -c 12 | grep -E '[%?!#@;\(\)\[\]+'`; echo $SROS_PW; done
+      args:
+        executable: /bin/bash
+      changed_when: False
+      delegate_to: localhost
+      register: new_sros_pw
+    
+    - debug:
+        var: new_sros_pw
+        verbosity: 0
+    
+    - name: Configure new user
+      sros_config:
+        lines: 
+          - access console
+          - console member "administrative"
+          - password {{ new_sros_pw.stdout }}
+        parents:
+          - configure
+          - system
+          - security
+          - user "{{ sros_new_user }}"
+        backup: yes
+        provider: "{{ cli }}"
+      register: configure_new_user 
+
+    - name: Current time and date
+      command: date
+      changed_when: False
+      delegate_to: localhost
+      register: cur_time_date
+    
+    - name: Register username and new password
+      shell: echo "{{ ansible_host }}, {{ sros_new_user }}, {{ new_sros_pw.stdout }}, {{ cur_time_date.stdout }}" >> user_pwd_update.log
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      
+
+    
+
+
+
+
+
