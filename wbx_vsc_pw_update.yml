@@ -60,7 +60,6 @@
       sros_config:
         lines: 
           - access console
-          - console member "administrative"
           - password {{ new_sros_pw.stdout }}
         parents:
           - configure
